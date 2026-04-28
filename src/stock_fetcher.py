@@ -26,8 +26,17 @@ async def get_stock_price_jpy(ticker: str) -> Optional[float]:
     """
     try:
         yf_ticker = await asyncio.to_thread(yf.Ticker, ticker)
-        info = await asyncio.to_thread(lambda: yf_ticker.fast_info)
-        price = getattr(info, "last_price", None)
+        
+        # fast_infoの代わりにhistory(period="1d")を使用
+        # 1日分の履歴を取得し、その最後の終値(Close)を取得する
+        df = await asyncio.to_thread(yf_ticker.history, period="1d")
+        
+        if df.empty:
+            print(f"[Stock] {ticker} のデータが空です")
+            return None
+            
+        price = df['Close'].iloc[-1]
+        print(f"{ticker}: {price}")
 
         if price is None or price <= 0:
             return None
@@ -39,11 +48,9 @@ async def get_stock_price_jpy(ticker: str) -> Optional[float]:
         # 米国株はドル→円換算
         rate = await get_usd_jpy_rate()
         return float(price) * rate
-
     except Exception as e:
         print(f"[Stock] {ticker} の株価取得失敗: {e}")
         return None
-
 
 async def get_current_portfolio_value_jpy(holdings: list) -> dict:
     """

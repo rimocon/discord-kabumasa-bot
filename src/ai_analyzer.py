@@ -63,24 +63,23 @@ async def analyze_with_gemini(amount_jpy: float) -> dict:
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
         generation_config={"response_mime_type": "application/json"}
     )
 
     today = datetime.now().strftime("%Y年%m月%d日")
     prompt = TRADE_PROMPT_TEMPLATE.format(today=today, amount_jpy=int(amount_jpy))
-
     # Web検索グラウンディングを使用（最新情報取得）
-    try:
-        from google.generativeai.types import Tool, GoogleSearchRetrieval
-        search_tool = Tool(google_search_retrieval=GoogleSearchRetrieval())
-        response = await asyncio.to_thread(
-            model.generate_content, prompt, tools=[search_tool]
-        )
-    except Exception:
+    # try:
+    #    from google.generativeai.types import Tool, GoogleSearchRetrieval
+    #    search_tool = Tool(google_search_retrieval=GoogleSearchRetrieval())
+    #    response = await asyncio.to_thread(
+    #        model.generate_content, prompt, tools=[search_tool]
+    #    )
+    #except Exception:
         # グラウンディングが使えない場合はそのまま実行
-        response = await asyncio.to_thread(model.generate_content, prompt)
-
+    #    response = await asyncio.to_thread(model.generate_content, prompt)
+    response = await asyncio.to_thread(model.generate_content, prompt)
     return _extract_json(response.text)
 
 async def analyze_with_claude(amount_jpy: float) -> dict:

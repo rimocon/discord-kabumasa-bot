@@ -29,9 +29,9 @@ from src import embeds
 # ---------- 設定 ----------
 TOKEN            = os.getenv("DISCORD_TOKEN")
 TRADE_CHANNEL_ID = int(os.getenv("TRADE_CHANNEL_ID", "0"))
-DAILY_AMOUNT     = float(os.getenv("DAILY_TRADE_AMOUNT", "10000"))
+DAILY_AMOUNT     = float(os.getenv("DAILY_TRADE_AMOUNT", "100000"))
 TRADE_HOUR       = int(os.getenv("DAILY_TRADE_HOUR", "9"))
-TRADE_MINUTE     = int(os.getenv("DAILY_TRADE_MINUTE", "0"))
+TRADE_MINUTE     = int(os.getenv("DAILY_TRADE_MINUTE", "20"))
 JST              = pytz.timezone("Asia/Tokyo")
 
 # ---------- Bot セットアップ ----------
@@ -61,44 +61,64 @@ async def send_portfolio(target, label: str = ""):
 
 # ---------- 自動トレード ----------
 async def daily_auto_trade():
-    channel = bot.get_channel(TRADE_CHANNEL_ID)
-    if not channel:
-        print(f"[Scheduler] チャンネルID {TRADE_CHANNEL_ID} が見つかりません")
+    print(f"[Scheduler] daily_auto_trade 開始")
+
+    # get_channel はキャッシュ依存のため、fetch_channel(API直叩き)で確実に取得
+    try:
+        channel = bot.get_channel(TRADE_CHANNEL_ID) or await bot.fetch_channel(TRADE_CHANNEL_ID)
+    except Exception as e:
+        print(f"[Scheduler] チャンネル取得失敗 (ID={TRADE_CHANNEL_ID}): {e}")
         return
 
-    print(f"[Scheduler] 自動トレード開始 ({DAILY_AMOUNT:,.0f}円)")
+    print(f"[Scheduler] チャンネル取得成功: #{channel.name}")
 
     # ① 開始通知
     await channel.send(
         embed=discord.Embed(
             title="🤖 自動トレード開始",
             description=(
-                f"自動トレードを開始します。分析金額: **{DAILY_AMOUNT:,.0f}円**\n"
+                f"分析金額: **{DAILY_AMOUNT:,.0f}円**\n"
                 "AIが最新情報を収集中です…"
             ),
             color=discord.Color.yellow()
         )
     )
+    print(f"[Scheduler] 開始通知送信完了")
 
     try:
         # ② トレード実行
+        print(f"[Scheduler] run_ai_auto_trade 呼び出し")
         result = await run_ai_auto_trade(DAILY_AMOUNT)
+        print(f"[Scheduler] run_ai_auto_trade 完了: {len(result.get('results', []))}件")
 
         # ③ トレード結果を投稿
         await channel.send(embed=embeds.trade_result_embed(result, is_auto=True))
+        print(f"[Scheduler] トレード結果送信完了")
 
         # ④ 最新ポートフォリオを円グラフ付きで投稿
-        await send_portfolio(channel, label="💼 本日のトレード後ポートフォリオ")
+        try:
+            await send_portfolio(channel, label="💼 トレード後ポートフォリオ")
+            print(f"[Scheduler] ポートフォリオ送信完了")
+        except Exception as chart_err:
+            import traceback
+            print(f"[Scheduler] ポートフォリオ投稿エラー:\n{traceback.format_exc()}")
+            snapshot = await get_portfolio_snapshot()
+            embed = embeds.portfolio_summary_embed(snapshot)
+            embed.title = "💼 トレード後ポートフォリオ"
+            embed.set_image(url=None)
+            await channel.send(embed=embed)
 
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[Scheduler] エラー:\n{tb}")
         await channel.send(
             embed=discord.Embed(
                 title="❌ 自動トレードエラー",
-                description=f"エラーが発生しました: {str(e)}",
+                description=f"```{tb[-500:]}```",
                 color=discord.Color.red()
             )
         )
-        print(f"[Scheduler] エラー: {e}")
 
 
 # ---------- オートコンプリート: 保有銘柄 ----------
@@ -213,12 +233,12 @@ async def on_ready():
 
     scheduler.add_job(
         daily_auto_trade,
-        IntervalTrigger(minutes=20, timezone=JST),
+        IntervalTrigger(minutes=10, timezone=JST),
         id="daily_trade",
         replace_existing=True
     )
     scheduler.start()
-    print(f"[Scheduler] 20分ごとに自動トレードを実行します")
+    print(f"[Scheduler] 10分ごとに自動トレードを実行します")
 
     channel = bot.get_channel(TRADE_CHANNEL_ID)
     if channel:
@@ -227,7 +247,7 @@ async def on_ready():
                 title="🚀 擬似トレードBot 起動",
                 description=(
                     f"**AIプロバイダー**: {os.getenv('AI_PROVIDER', 'gemini').upper()}\n"
-                    f"**自動トレード**: 20分ごと / {DAILY_AMOUNT:,.0f}円\n\n"
+                    f"**自動トレード**: 10分ごと / {DAILY_AMOUNT:,.0f}円\n\n"
                     "スラッシュコマンド:\n"
                     "`/trade [金額]` — 手動トレード\n"
                     "`/sell <銘柄> [割合]` — 売却\n"

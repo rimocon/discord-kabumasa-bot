@@ -91,7 +91,7 @@ async def analyze_with_gemini(prompt: str) -> dict:
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        "gemini-2.0-flash-exp",
+        "gemini-2.5-flash-lite",
         generation_config={"response_mime_type": "application/json"}
     )
 

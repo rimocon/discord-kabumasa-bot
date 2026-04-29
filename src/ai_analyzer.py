@@ -11,41 +11,50 @@ import asyncio
 AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
 
 
-TRADE_PROMPT_TEMPLATE = """
+def build_prompt(amount_jpy: float, holdings_info: str) -> str:
+    today = datetime.now().strftime("%Y年%m月%d日")
+    return f"""
 あなたは優秀な株式アナリストです。今日の日付は {today} です。
 
-以下のタスクを実行してください：
-1. 本日の最新ニュースや市場動向から、特に注目すべき日本株または米国株の銘柄を調査する
-2. 投資額 {amount_jpy}円 を使って、最もリターンが期待できる銘柄への擬似投資を1〜3銘柄提案する
-3. 各銘柄について根拠を明確に説明する
+【現在の保有銘柄】
+{holdings_info}
 
-必ず以下のJSON形式のみで回答してください。JSONの前後に余計なテキストを含めないこと：
+【タスク】
+最新ニュースや市場動向を調査し、以下を判断してください：
+1. 保有銘柄について → 売却すべきか（SELL）、そのまま保有か（HOLD）
+2. 新規購入について → 買い目な銘柄があれば購入（BUY）。新規購入の合計は {int(amount_jpy)}円 以内
+
+【回答形式】
+必ず以下のJSON形式のみで回答してください。前後に余計なテキストを含めないこと：
 
 {{
-  "summary": "本日の市場概況を2〜3文で説明",
+  "summary": "本日の市場概況と判断の要点を2〜3文で説明",
   "trades": [
     {{
       "ticker": "銘柄コード(例: 7203.T または AAPL)",
       "company_name": "会社名(日本語)",
-      "action": "BUY",
-      "amount_jpy": 購入金額(整数・円),
-      "reason": "購入理由を2〜3文で説明"
+      "action": "SELL または BUY",
+      "sell_ratio": 売却割合(0.0〜1.0, SELLのみ必須。1.0=全売却),
+      "amount_jpy": 購入金額(整数・円, BUYのみ必須),
+      "reason": "判断理由を2〜3文で説明"
     }}
   ]
 }}
 
-注意事項：
-- tickerは実在する銘柄コードを使用すること（日本株は末尾に.T）
-- 全銘柄の amount_jpy の合計が {amount_jpy} 円を超えないようにすること
+【注意事項】
+- HOLDの銘柄はtradesに含めない（何もしない）
+- SELLはすでに保有している銘柄のみ指定できる
+- BUYのticker は実在する銘柄コード（日本株は末尾に.T）
+- BUY の amount_jpy の合計が {int(amount_jpy)} 円を超えないこと
+- 売却後に得た現金は今回のBUYには使わない（当日の購入予算は {int(amount_jpy)} 円固定）
+- tradesが空の場合は {{"summary": "...", "trades": []}} を返す
 - 必ずJSON形式のみで返答すること
 """
 
 
 def _extract_json(text: str) -> dict:
     """レスポンステキストからJSONを抽出してパース"""
-    # コードブロック除去
     text = re.sub(r"```(?:json)?", "", text).strip()
-    # 最初の { から最後の } までを抽出
     start = text.find("{")
     end = text.rfind("}") + 1
     if start == -1 or end == 0:
@@ -53,7 +62,26 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start:end])
 
 
-async def analyze_with_gemini(amount_jpy: float) -> dict:
+def _format_holdings(holdings: list, valuations: dict) -> str:
+    """保有銘柄をプロンプト用テキストに整形"""
+    if not holdings:
+        return "なし（現在保有銘柄はありません）"
+    lines = []
+    for h in holdings:
+        v = valuations.get(h["ticker"], {})
+        gl  = v.get("gain_loss_jpy", 0)
+        glp = v.get("gain_loss_pct", 0)
+        mv  = v.get("market_value_jpy", h["avg_cost_jpy"] * h["shares"])
+        sign = "+" if gl >= 0 else ""
+        lines.append(
+            f"- {h['company_name']} ({h['ticker']}): "
+            f"{h['shares']:.2f}株, 評価額 {mv:,.0f}円, "
+            f"損益 {sign}{gl:,.0f}円 ({sign}{glp:.1f}%)"
+        )
+    return "\n".join(lines)
+
+
+async def analyze_with_gemini(prompt: str) -> dict:
     """Gemini APIでトレード分析"""
     import google.generativeai as genai
 
@@ -63,26 +91,23 @@ async def analyze_with_gemini(amount_jpy: float) -> dict:
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-exp",
         generation_config={"response_mime_type": "application/json"}
     )
 
-    today = datetime.now().strftime("%Y年%m月%d日")
-    prompt = TRADE_PROMPT_TEMPLATE.format(today=today, amount_jpy=int(amount_jpy))
-    # Web検索グラウンディングを使用（最新情報取得）
-    # try:
-    #    from google.generativeai.types import Tool, GoogleSearchRetrieval
-    #    search_tool = Tool(google_search_retrieval=GoogleSearchRetrieval())
-    #    response = await asyncio.to_thread(
-    #        model.generate_content, prompt, tools=[search_tool]
-    #    )
-    #except Exception:
-        # グラウンディングが使えない場合はそのまま実行
-    #    response = await asyncio.to_thread(model.generate_content, prompt)
-    response = await asyncio.to_thread(model.generate_content, prompt)
+    try:
+        from google.generativeai.types import Tool, GoogleSearchRetrieval
+        search_tool = Tool(google_search_retrieval=GoogleSearchRetrieval())
+        response = await asyncio.to_thread(
+            model.generate_content, prompt, tools=[search_tool]
+        )
+    except Exception:
+        response = await asyncio.to_thread(model.generate_content, prompt)
+
     return _extract_json(response.text)
 
-async def analyze_with_claude(amount_jpy: float) -> dict:
+
+async def analyze_with_claude(prompt: str) -> dict:
     """Claude APIでトレード分析"""
     import anthropic
 
@@ -91,8 +116,6 @@ async def analyze_with_claude(amount_jpy: float) -> dict:
         raise ValueError("ANTHROPIC_API_KEY が設定されていません")
 
     client = anthropic.Anthropic(api_key=api_key)
-    today = datetime.now().strftime("%Y年%m月%d日")
-    prompt = TRADE_PROMPT_TEMPLATE.format(today=today, amount_jpy=int(amount_jpy))
 
     response = await asyncio.to_thread(
         client.messages.create,
@@ -102,30 +125,43 @@ async def analyze_with_claude(amount_jpy: float) -> dict:
         messages=[{"role": "user", "content": prompt}]
     )
 
-    # テキストブロックを結合
     text = " ".join(
         block.text for block in response.content if hasattr(block, "text")
     )
     return _extract_json(text)
 
-async def get_ai_trade_suggestion(amount_jpy: float) -> dict:
+
+async def get_ai_trade_suggestion(amount_jpy: float, holdings: list, valuations: dict) -> dict:
     """
-    設定されたAIプロバイダーでトレード提案を取得する
+    保有状況を渡してAIにBUY/SELL/HOLDを判断させる
+
+    Args:
+        amount_jpy: 新規購入に使える予算（円）
+        holdings:   DB の holdings レコードリスト
+        valuations: stock_fetcher の評価額dict
 
     Returns:
         {
           "summary": str,
-          "trades": [{"ticker": str, "company_name": str, "action": str, "amount_jpy": int, "reason": str}]
+          "trades": [
+            {"ticker": str, "company_name": str, "action": "BUY"|"SELL",
+             "sell_ratio": float,  # SELLのみ
+             "amount_jpy": int,    # BUYのみ
+             "reason": str}
+          ]
         }
     """
     provider = AI_PROVIDER
-    print(f"[AI] プロバイダー: {provider}, 分析金額: {amount_jpy:,.0f}円")
+    holdings_info = _format_holdings(holdings, valuations)
+    prompt = build_prompt(amount_jpy, holdings_info)
+
+    print(f"[AI] プロバイダー: {provider}, 予算: {amount_jpy:,.0f}円, 保有: {len(holdings)}銘柄")
 
     try:
         if provider == "gemini":
-            return await analyze_with_gemini(amount_jpy)
+            return await analyze_with_gemini(prompt)
         elif provider == "claude":
-            return await analyze_with_claude(amount_jpy)
+            return await analyze_with_claude(prompt)
         else:
             raise ValueError(f"不明なAIプロバイダー: {provider}")
     except Exception as e:

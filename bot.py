@@ -14,7 +14,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 import pytz
 from dotenv import load_dotenv
 
@@ -73,7 +73,7 @@ async def daily_auto_trade():
         embed=discord.Embed(
             title="🤖 自動トレード開始",
             description=(
-                f"本日の自動トレードを開始します。分析金額: **{DAILY_AMOUNT:,.0f}円**\n"
+                f"自動トレードを開始します。分析金額: **{DAILY_AMOUNT:,.0f}円**\n"
                 "AIが最新情報を収集中です…"
             ),
             color=discord.Color.yellow()
@@ -193,6 +193,7 @@ async def status_command(interaction: discord.Interaction):
     embed.add_field(name="状態",            value="✅ 稼働中",              inline=True)
     embed.add_field(name="AIプロバイダー",   value=provider,                 inline=True)
     embed.add_field(name="次回自動トレード",  value=next_run_str,             inline=False)
+    embed.add_field(name="実行間隔",         value="10分ごと",               inline=True)
     embed.add_field(name="自動トレード金額",  value=f"{DAILY_AMOUNT:,.0f}円", inline=True)
     await interaction.response.send_message(embed=embed)
 
@@ -212,12 +213,12 @@ async def on_ready():
 
     scheduler.add_job(
         daily_auto_trade,
-        CronTrigger(hour=TRADE_HOUR, minute=TRADE_MINUTE, timezone=JST),
+        IntervalTrigger(minutes=20, timezone=JST),
         id="daily_trade",
         replace_existing=True
     )
     scheduler.start()
-    print(f"[Scheduler] 毎日 {TRADE_HOUR:02d}:{TRADE_MINUTE:02d} JST に自動トレードを実行します")
+    print(f"[Scheduler] 20分ごとに自動トレードを実行します")
 
     channel = bot.get_channel(TRADE_CHANNEL_ID)
     if channel:
@@ -226,7 +227,7 @@ async def on_ready():
                 title="🚀 擬似トレードBot 起動",
                 description=(
                     f"**AIプロバイダー**: {os.getenv('AI_PROVIDER', 'gemini').upper()}\n"
-                    f"**毎日の自動トレード**: {TRADE_HOUR:02d}:{TRADE_MINUTE:02d} JST / {DAILY_AMOUNT:,.0f}円\n\n"
+                    f"**自動トレード**: 20分ごと / {DAILY_AMOUNT:,.0f}円\n\n"
                     "スラッシュコマンド:\n"
                     "`/trade [金額]` — 手動トレード\n"
                     "`/sell <銘柄> [割合]` — 売却\n"
